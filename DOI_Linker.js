@@ -1,5 +1,38 @@
-/*global app, NothingEnum, InCopyTron, XML, Socket, $, Note, Window*/
-var DOI_Tools = {
+/*global app, NothingEnum, InCopyTron, XML, Socket*/
+#targetengine DOI_Engine;
+Hyperlinking = {
+    insertNoteAfter: function (container, selectionPoint, comment) {
+        "use strict";
+        var justInserted = container.notes.add(LocationOptions.AFTER, selectionPoint).id;
+        container.notes.itemByID(justInserted).texts[0].contents = comment;
+    },
+    makeHyperlinkDestination: function (URL) {
+        //If the hyperlink destination already exists, use it;
+        //if it doesn't, then create it.
+        "use strict";
+        var myHyperlinkDestination;
+        if (app.activeDocument.hyperlinkURLDestinations.item(URL).isValid && app.activeDocument.hyperlinkURLDestinations.item(URL).name) {
+            return myHyperlinkDestination;
+        }
+        myHyperlinkDestination = app.activeDocument.hyperlinkURLDestinations.add(URL, {hidden: true, name: Math.random().toString()});
+        myHyperlinkDestination.name = URL;
+        return myHyperlinkDestination;
+    },
+    makeHyperlink: function (target, URL) {
+        "use strict";
+        var hyperlinkTextSource, i, hyperlinkSources = app.activeDocument.hyperlinkTextSources, hyperlink;
+        for (i = 0; i < hyperlinkSources.length; i += 1) {
+            if (hyperlinkSources[i].sourceText === target) {
+                return hyperlinkSources[i];
+            }
+        }
+        hyperlinkTextSource = app.activeDocument.hyperlinkTextSources.add(target);
+        hyperlink = app.activeDocument.hyperlinks.add(hyperlinkTextSource, this.makeHyperlinkDestination(URL), {hidden: false, name: target.contents});
+        hyperlink.visible = false;
+        this.insertNoteAfter(target, target.insertionPoints.item(0), URL);
+    }
+};
+DOI_Engine = {
     /* DOI Extractor Plugin
         Detects DOIs in article, displays them
         Also allows user to open DOI from UI
@@ -24,7 +57,7 @@ var DOI_Tools = {
         };
         found_text_objects = app.activeDocument.findGrep();
         for (i = 0; i < found_text_objects.length; i += 1) {
-            if (found_text_objects[i].parent instanceof Note === false) {
+            if (found_text_objects[i].parent instanceof Note === false){
                 DOIs.push(found_text_objects[i]);
             }
         }
@@ -34,13 +67,12 @@ var DOI_Tools = {
     current_DOIs: {},
     output_to_listbox: function (listbox_object) {
         "use strict";
-        var i, pulled_DOIs = this.pull_from_active_document(),
-            DOI_ListBoxItem;
-        DOI_Tools.current_DOIs = {};
+        var i, pulled_DOIs = this.pull_from_active_document(), DOI_ListBoxItem;
+        DOI_Engine.current_DOIs = {};
         for (i = 0; i < pulled_DOIs.length; i += 1) {
             DOI_ListBoxItem = listbox_object.add("item", pulled_DOIs[i]);
             DOI_ListBoxItem.text = pulled_DOIs[i].contents;
-            DOI_Tools.current_DOIs[pulled_DOIs[i].contents] = pulled_DOIs[i];
+            DOI_Engine.current_DOIs[pulled_DOIs[i].contents] = pulled_DOIs[i];
         }
     },
     makeRequest: function (host, url, accept) {
@@ -52,6 +84,7 @@ var DOI_Tools = {
         request = "GET /" + url + " HTTP/1.1\n" + "Host: " + host + "\n" + "User-Agent: InCopy ExtendScript\n" + "Accept: " + accept + "\n" + "Connection: close\n" + "\n";
         return request;
     },
+
     callDOI: function (DOI) {
         /*
             Calls DOI from web
@@ -69,9 +102,7 @@ var DOI_Tools = {
             the larger InCopyTron framework later.
         */
         socket = new Socket();
-        //Correctly encode all the things!
         socket.encoding = "UTF-8";
-        //Because seriously, if you don't, you'll be sad.
         request = this.makeRequest('dx.doi.org:80', DOI, 'application/unixref+xml');
         socket.open('dx.doi.org:80');
         socket.write(request);
@@ -81,6 +112,8 @@ var DOI_Tools = {
         // The following is a bit of an ugly hack to check if you're getting redirected.
         // It then follows the redirect.
         // I try not to use while loops often, but this is a case that would be a good use of them.
+        // Though as I'm writing this, I'm concerned about infinite loops...
+        // TODO: limit number of redirects
         redirects = 0;
         while (response.match('1.1 30[123]') && redirects < 10) {
             redirect_url = response.match('(?:Location: )(.*?)\n')[1];
@@ -113,8 +146,7 @@ var DOI_Tools = {
     },
     output_XML_to_listbox: function (DOI_XML, listbox_object) {
         "use strict";
-        var data_array = [],
-            entry, i;
+        var data_array = [], entry, i, person;
         if (DOI_XML && typeof DOI_XML === 'xml' && listbox_object) {
             listbox_object.removeAll(); // Clears Listbox to avoid crazy levels of items
             /*
@@ -128,37 +160,40 @@ var DOI_Tools = {
 
                 Until then, we're going to call SPECIFIC parts of the XML and go with that.
             */
-            if (DOI_XML.xpath('doi_record/crossref/journal/journal_article/titles/title').toString() === "") {
-                for (i = 0; i < DOI_XML.descendants('title').length(); i += 1) {
+            if(DOI_XML.xpath('doi_record/crossref/journal/journal_article/titles/title').toString() === ""){
+                for(i = 0; i < DOI_XML.descendants('title').length(); i += 1){
                     data_array.push(['title', DOI_XML.descendants('title')[i].toString()]);
-                }
-            } else {
-                data_array.push(['title', DOI_XML.xpath('doi_record/crossref/journal/journal_article/titles/title').toString().replace(/<.*?>/g, '').replace(/(^\s+|\s+$)/g, '').replace(/[\n\t]/g, "").replace(/\s+/g, ' ')]);
-            }
+                    }
+                } else {
+                    data_array.push(['title', DOI_XML.xpath('doi_record/crossref/journal/journal_article/titles/title').toString().replace(/<.*?>/g,'').replace(/(^\s+|\s+$)/g,'')]);
+                    }
             data_array.push(
-            ['journal', DOI_XML.xpath('doi_record/crossref/journal/journal_metadata/full_title').toString()], ['journal_abbrev', DOI_XML.xpath('doi_record/crossref/journal/journal_metadata/abbrev_title').toString()], ['print_pub_date', DOI_XML.xpath('doi_record/crossref/journal/journal_issue/publication_date/month').toString() + "/" + DOI_XML.xpath('doi_record/crossref/journal/journal_issue/publication_date/year').toString()], ['online_pub_date', DOI_XML.xpath('doi_record/crossref/journal/journal_article/publication_date/month').toString() + "/" + DOI_XML.xpath('doi_record/crossref/journal/journal_article/publication_date/year').toString()], ['doi', DOI_XML.descendants('doi').toString()]);
+                ['journal', DOI_XML.xpath('doi_record/crossref/journal/journal_metadata/full_title').toString()],
+                ['journal_abbrev', DOI_XML.xpath('doi_record/crossref/journal/journal_metadata/abbrev_title').toString()],
+                ['print_pub_date', DOI_XML.xpath('doi_record/crossref/journal/journal_issue/publication_date/month').toString() + "/" + DOI_XML.xpath('doi_record/crossref/journal/journal_issue/publication_date/year').toString()],
+                ['online_pub_date', DOI_XML.xpath('doi_record/crossref/journal/journal_article/publication_date/month').toString() + "/" + DOI_XML.xpath('doi_record/crossref/journal/journal_article/publication_date/year').toString()],
+                ['doi', DOI_XML.descendants('doi').toString()]
+            );
             for (i = 0; i < data_array.length; i += 1) {
                 entry = listbox_object.add("item", data_array[i][0]);
                 entry.subItems[0].text = data_array[i][1];
             }
-            //TODO: Clean the stringcleaning
-            InCopyTron.GUI.Window.findElement('DOI_edittext').text = InCopyTron.GUI.Window.findElement('DOI_edittext').text + DOI_XML.xpath('doi_record/crossref/journal/journal_article/titles/title').toString().toString().replace(/<.*?>/g, '').replace(/(^\s+|\s+$)/g, '');
+        //TODO: Clean the stringcleaning 
+            DOI_Engine.GUI.findElement('DOI_edittext').text = DOI_Engine.GUI.findElement('DOI_edittext').text + DOI_XML.xpath('doi_record/crossref/journal/journal_article/titles/title').toString().toString().replace(/<.*?>/g,'').replace(/(^\s+|\s+$)/g,'');
         }
     },
     getContext: function (text) {
-        "use strict";
         var text_object, surrounding_paragraph;
-        text_object = DOI_Tools.current_DOIs[text];
+        text_object = DOI_Engine.current_DOIs[text];
         surrounding_paragraph = text_object.paragraphs[0].contents.split(text_object.contents);
         return surrounding_paragraph[0] + "\n\n" + text_object.contents + "\n\n" + surrounding_paragraph[1];
-    },
+        },
     generateGUI: function () {
         "use strict";
-        var mainGUI = new Window("window", "DOI Tools", undefined, {
-            name: "DOI Tools",
-            closeButton: true
-        }),
-            DOI_tab = mainGUI.add("tab", undefined, "DOIs"),
+        var DOI_tab = new Window("window", "DOI Searcher", undefined, {
+                name: "DOI_Engine",
+                closeButton: true
+            }),
             DOI_panel = DOI_tab.add("panel", undefined, "DOIs"),
             DOI_statictext = DOI_panel.add("statictext", undefined, "Double-click to open DOI in browser"),
             DOI_listbox = DOI_panel.add("listbox", undefined, "Keywords", {
@@ -168,7 +203,7 @@ var DOI_Tools = {
                 columnWidths: [300]
             }),
             DOI_pullButton = DOI_panel.add('button', undefined, "Pull XML From Web"),
-            DOI_XML_panel = DOI_tab.add('panel', undefined, "DOI Information (If there are multiple titles, choose one)"),
+            DOI_XML_panel = DOI_tab.add('panel', undefined, "DOI Information"),
             DOI_XML_box = DOI_XML_panel.add('listbox', undefined, "Data From XML", {
                 name: 'DOI_XML_box',
                 numberOfColumns: 2,
@@ -180,53 +215,48 @@ var DOI_Tools = {
             DOI_context_statictext,
             DOI_applyHyperlinkButton;
         this.GUI = DOI_tab;
-        DOI_XML_box.preferredSize = [600, 130];
+        DOI_XML_box.preferredSize = [600, 150];
         DOI_pullButton.onClick = function () {
             var DOI, DOI_XML;
             if (DOI_listbox.selection && DOI_listbox.selection.toString().match(this.DOI_regex)) {
                 DOI = DOI_listbox.selection.toString();
-                DOI_XML = DOI_Tools.getDOIXML(DOI);
-                DOI_Tools.output_XML_to_listbox(DOI_XML, InCopyTron.GUI.Window.findElement('DOI_XML_box'));
-                DOI_applyHyperlinkButton.enabled = true;
+                DOI_XML = DOI_Engine.getDOIXML(DOI);
+                DOI_Engine.output_XML_to_listbox(DOI_XML, DOI_Engine.GUI.findElement('DOI_XML_box'));
+                DOI_applyHyperlinkButton.enabled= true;
             }
         };
         DOI_XML_box.onChange = function () {
-            if (this.selection.text === "title") {
-                InCopyTron.GUI.Window.findElement('DOI_edittext').text = InCopyTron.GUI.Window.findElement('DOI_edittext').text.split("|")[0] + "|" + this.selection.subItems[0].text;
+            if (this.selection.text === "title"){
+                DOI_Engine.GUI.findElement('DOI_edittext').text = DOI_Engine.GUI.findElement('DOI_edittext').text.split("|")[0] + "|" + this.selection.subItems[0].text;
+                }
             }
-        };
         DOI_listbox.onDoubleClick = function () {
             // Opens dx.doi.org link for DOI in browser
-            var URL;
+            "use strict";
+            var URL, vbscript;
             URL = "http://dx.doi.org/" + this.selection.toString();
-            InCopyTron.General_Functions.open_URL_in_browser(URL);
+            vbscript = 'dim objShell\rset objShell = CreateObject("Shell.Application")\rstr = "' + URL + '"\robjShell.ShellExecute str, "", "", "open", 1 ';
+            app.doScript(vbscript, ScriptLanguage.VISUAL_BASIC);
         };
         DOI_tab.alignChildren = "top";
         DOI_tab.orientation = "row";
-        DOI_XML_panel.output_field = DOI_XML_panel.add("edittext", undefined, "", {
-            name: 'DOI_edittext'
-        });
+        DOI_XML_panel.output_field = DOI_XML_panel.add("edittext", undefined, "", {name: 'DOI_edittext'});
         DOI_XML_panel.output_field.minimumSize.width = 600;
         DOI_contextpanel = DOI_XML_panel.add("panel", undefined, "Context");
-        DOI_context_statictext = DOI_contextpanel.add("statictext", undefined, "Select a DOI to see context", {
-            name: "DOI Context",
-            multiline: true
-        });
+        DOI_context_statictext = DOI_contextpanel.add("statictext", undefined, "Select a DOI to see context", {name: "DOI Context", multiline: true});
         DOI_context_statictext.preferredSize = [600, 150];
         DOI_applyHyperlinkButton = DOI_contextpanel.add('button', undefined, "Apply Hyperlink");
         DOI_applyHyperlinkButton.onClick = function () {
-            InCopyTron.Hyperlinking.makeHyperlink(DOI_Tools.current_DOIs[DOI_listbox.selection], InCopyTron.GUI.Window.findElement('DOI_edittext').text);
+            Hyperlinking.makeHyperlink(DOI_Engine.current_DOIs[DOI_listbox.selection], DOI_Engine.GUI.findElement('DOI_edittext').text);
             this.enabled = false;
-        };
+            }
         DOI_listbox.onChange = function () {
             try {
-                if (this.selection) {
-                    DOI_XML_panel.output_field.text = "http://dx.doi.org/" + this.selection.toString() + "|";
-                    InCopyTron.GUI.Window.findElement("DOI Context").text = DOI_Tools.getContext(this.selection);
+                if (this.selection){
+                DOI_XML_panel.output_field.text = "http://dx.doi.org/" + this.selection.toString() + "|";
+                DOI_Engine.GUI.findElement("DOI Context").text = DOI_Engine.getContext(this.selection);
                 }
-            } catch (error) {
-                $.writeln(error);
-            }
+            } catch (error) {$.writeln(error);}
         };
         DOI_listbox.preferredSize = [300, 330];
         this.output_to_listbox(DOI_listbox);
@@ -234,3 +264,4 @@ var DOI_Tools = {
         DOI_tab.show();
     }
 };
+DOI_Engine.generateGUI();
